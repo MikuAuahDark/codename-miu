@@ -22,19 +22,71 @@
   SOFTWARE.
 ]]
 
+local love = require("love")
+local love_graphics_newTextBatch = love.graphics.newTextBatch or love.graphics.newText
+
 local RichText = {}
-RichText.__index = RichText
 
-local effects = {}
+---@class RichTextEffectGroup
+local EffectGroup = {}
+EffectGroup.__index = EffectGroup
 
-function RichText.addEffect(name, fn)
-  if effects[name] then
+---@class RichTextEffectInfo
+---@field public char string the character you're running your effect on.
+---@field public index integer the index of your char.
+---@field public length integer the length of the substring your effect is being applied to.
+---@alias RichTextEffectFunction fun(text:RichText,args:table<string,number>,info:RichTextEffectInfo)
+
+---@param name string
+---@param fn RichTextEffectFunction
+function EffectGroup:addEffect(name, fn)
+  if self.effects[name] then
     error("Effect '" .. name .. "' already exists.")
   end
 
-  effects[name] = fn
+  self.effects[name] = fn
 end
 
+---@param name string
+---@return RichTextEffectInfo?
+function EffectGroup:getEffect(name)
+  return self.effects[name]
+end
+
+---@param name string
+function EffectGroup:removeEffect(name)
+  self.effects[name] = nil
+end
+
+---@package
+function EffectGroup:_()
+  self.effects = {}
+end
+
+---@class RichText
+local RichTextObject = {}
+RichTextObject.__index = RichTextObject
+
+function RichText.newEffectGroup()
+  local result = setmetatable({}, EffectGroup)
+  result:_()
+  return result
+end
+
+local defaultEffectGroup = RichText.newEffectGroup()
+
+---@param name string
+---@param fn RichTextEffectFunction
+function RichText.addEffect(name, fn)
+  return defaultEffectGroup:addEffect(name, fn)
+end
+
+---@param name string
+function RichText.removeEffect(name)
+  return defaultEffectGroup:removeEffect(name)
+end
+
+---@param format string
 function RichText.parse(format)
   local tformat = {}
 
@@ -48,10 +100,11 @@ function RichText.parse(format)
       local name = inner:match("^[/%a]+")
       args[1] = name
       for k, v in inner:gmatch("(%w-)=([%w%.%-]+)") do
-        if not v:match("^%-?%d*%.?%d*$") then
+        local numval = tonumber(v)
+        if not numval then
           error("Invalid effect arg '" .. k .. "'. Numbers are the only supported type.")
         end
-        args[k] = tonumber(v)
+        args[k] = numval
       end
       table.insert(tformat, args)
     end
@@ -60,65 +113,78 @@ function RichText.parse(format)
   return tformat
 end
 
-function RichText.new(font, format)
-  local instance = setmetatable({}, RichText)
-
-  instance.font = font
-  if type(format) == "table" then
-    instance.format = format
-  elseif type(format) == "string" then
-    instance.format = RichText.parse(format)
-  end
-  instance.text = love.graphics.newText(font)
-  instance:update()
-
+---@param font love.Font
+---@param format string|table
+---@param effectGroup RichTextEffectGroup?
+function RichText.new(font, format, effectGroup)
+  local instance = setmetatable({}, RichTextObject)
+  instance:_(font, format, effectGroup)
   return instance
 end
 
-function RichText:setColor(r, g, b, a)
+---@param font love.Font
+---@param format string|table
+---@param effectGroup RichTextEffectGroup?
+function RichTextObject:_(font, format, effectGroup)
+  self.font = font
+  if type(format) == "table" then
+    self.format = format
+  elseif type(format) == "string" then
+    self.format = RichText.parse(format)
+  end
+  self.effectGroup = effectGroup or defaultEffectGroup
+  self.text = love_graphics_newTextBatch(font)
+  self:update()
+end
+
+---@param r number
+---@param g number
+---@param b number
+---@param a number?
+function RichTextObject:setColor(r, g, b, a)
   self.color = {r, g, b, a}
 end
 
-function RichText:getColor()
+function RichTextObject:getColor()
   return unpack(self.color)
 end
 
-function RichText:setPosition(x, y)
+function RichTextObject:setPosition(x, y)
   self.charx = x
   self.chary = y
 end
 
-function RichText:getPosition()
+function RichTextObject:getPosition()
   return self.charx, self.chary
 end
 
-function RichText:setScale(x, y)
+function RichTextObject:setScale(x, y)
   self.scalex = x
   self.scaley = y
 end
 
-function RichText:getScale()
+function RichTextObject:getScale()
   return self.scalex, self.scaley
 end
 
-function RichText:setSkew(x, y)
+function RichTextObject:setSkew(x, y)
   self.skewx = x
   self.skewy = y
 end
 
-function RichText:getSkew()
+function RichTextObject:getSkew()
   return self.skewx, self.skewy
 end
 
-function RichText:setRotation(rotation)
+function RichTextObject:setRotation(rotation)
   self.rotation = rotation
 end
 
-function RichText:getRotation()
+function RichTextObject:getRotation()
   return self.rotation
 end
 
-function RichText:update()
+function RichTextObject:update()
   self.text:clear()
 
   local currentEffects = {}
@@ -169,12 +235,13 @@ function RichText:update()
 
         currentEffects[effectName] = nil
       else
-        if not effects[effectName] then
+        local effectfn = self.effectGroup:getEffect(effectName)
+        if not effectfn then
           error("Effect '" .. effectName .. "' does not exist.")
         end
 
         currentEffects[effectName] = {
-          fn = effects[effectName],
+          fn = effectfn,
           args = effectOrStr,
         }
       end
@@ -182,7 +249,7 @@ function RichText:update()
   end
 end
 
-function RichText:draw(...)
+function RichTextObject:draw(...)
   love.graphics.draw(self.text, ...)
 end
 
